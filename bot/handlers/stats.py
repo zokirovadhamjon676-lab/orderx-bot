@@ -2,6 +2,7 @@ from aiogram import types
 from database.db import get_orders
 from openpyxl import Workbook
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
 
 def back_button():
     keyboard = InlineKeyboardMarkup()
@@ -14,16 +15,30 @@ async def export_orders_excel(message: types.Message):
         await message.answer("📭 Buyurtma mavjud emas.", reply_markup=back_button())
         return
 
-    wb = Workbook()
-    ws = wb.active
-    ws.append(["ID", "Klient", "Telefon", "Manzil", "Mahsulot", "Miqdor", "Sana"])
-
-    for row in orders:
-        # row: order_id, client_name, client_phone, client_address, product, amount, date
-        ws.append(row)
-
+    # Fayl nomi
     file_path = "orders.xlsx"
-    wb.save(file_path)
+    
+    try:
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["№", "Klient", "Telefon", "Manzil", "Mahsulot", "Miqdor", "Sana"])
 
-    with open(file_path, "rb") as file:
-        await message.answer_document(file, caption="📊 Buyurtmalar ro‘yxati", reply_markup=back_button())
+        for idx, row in enumerate(orders, start=1):
+            # row: order_id, client_name, phone, address, product, amount, date
+            ws.append([idx, row[1], row[2], row[3], row[4], row[5], row[6]])
+
+        wb.save(file_path)
+
+        # Faylni yuborish
+        with open(file_path, "rb") as file:
+            await message.answer_document(
+                types.InputFile(file, filename="buyurtmalar.xlsx"),
+                caption="📊 Buyurtmalar ro‘yxati",
+                reply_markup=back_button()
+            )
+
+        # Faylni o‘chirish (ixtiyoriy)
+        os.remove(file_path)
+
+    except Exception as e:
+        await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")

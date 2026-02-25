@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS orders(
 )
 """)
 
-# Settings jadvali (bot sozlamalari)
+# Settings jadvali
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS settings(
     key TEXT PRIMARY KEY,
@@ -33,13 +33,34 @@ CREATE TABLE IF NOT EXISTS settings(
 )
 """)
 
-# Standart qiymatlarni kiritish (agar bo'sh bo'lsa)
+# Users jadvali (telefon va full_name ustunlari bilan)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users(
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    is_banned INTEGER DEFAULT 0,
+    joined_at TEXT,
+    phone TEXT,
+    full_name TEXT
+)
+""")
+
+# Mavjud jadvalga ustunlar qo'shish (agar mavjud bo'lmasa)
+cursor.execute("PRAGMA table_info(users)")
+columns = [col[1] for col in cursor.fetchall()]
+if 'phone' not in columns:
+    cursor.execute("ALTER TABLE users ADD COLUMN phone TEXT")
+if 'full_name' not in columns:
+    cursor.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
+
+# Standart settings qiymatlari
 cursor.execute("SELECT COUNT(*) FROM settings")
 if cursor.fetchone()[0] == 0:
     cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", ("password_hash", ""))
     cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", ("admin_phone", ""))
-    print("⚠️ Settings jadvaliga standart qatorlar qo'shildi. Iltimos, botni ishga tushirib, parol va telefonni sozlang.")
 
 conn.commit()
 conn.close()
-print("✅ Database ready with settings table.")
+print("✅ Database ready.")

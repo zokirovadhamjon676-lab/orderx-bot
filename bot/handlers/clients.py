@@ -2,17 +2,10 @@ from aiogram import types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database.db import get_clients, delete_client
 
-# Ortga tugmasi yaratish uchun yordamchi funksiya
-def back_button():
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("🔙 Ortga", callback_data="back_to_main"))
-    return keyboard
-
 async def add_client_cmd(message: types.Message):
     await message.answer(
         "Ism, telefon va manzilni vergul bilan ajratib yozing.\n"
-        "Misol: `Adham, 998901234567, Samarqand sh.`",
-        reply_markup=back_button()
+        "Misol: `Adham, +998901234567, Samarqand sh.`"
     )
 
 async def list_clients_handler(message: types.Message):
@@ -20,10 +13,10 @@ async def list_clients_handler(message: types.Message):
     if clients:
         text = "📋 Klientlar ro'yxati:\n\n"
         for idx, c in enumerate(clients, start=1):
-            text += f"{idx}. {c[1]}\n   📞 {c[2]}\n   📍 {c[3]}\n\n"
-        await message.answer(text, reply_markup=back_button())
+            text += f"{idx}. {c[1]}\n   📞 {c[2]}\n   📍 {c[3] or '—'}\n\n"
+        await message.answer(text)
     else:
-        await message.answer("⚠️ Hozircha klient yo‘q.", reply_markup=back_button())
+        await message.answer("⚠️ Hozircha klient yo‘q.")
 
 async def show_clients_for_delete(message: types.Message):
     clients = get_clients()
@@ -40,7 +33,6 @@ async def show_clients_for_delete(message: types.Message):
             text=button_text,
             callback_data=f"del_client:{c[0]}"
         ))
-    # Ortga tugmasi
     keyboard.add(InlineKeyboardButton("🔙 Ortga", callback_data="back_to_main"))
     await message.answer("O'chirmoqchi bo'lgan klientni tanlang:", reply_markup=keyboard)
 
@@ -49,6 +41,7 @@ async def delete_client_callback(callback: types.CallbackQuery):
     success, error = delete_client(client_id)
     if success:
         await callback.answer("✅ Klient o'chirildi")
-        await callback.message.edit_text("Klient o'chirildi.", reply_markup=back_button())
+        # Xabarni yangilash
+        await callback.message.edit_text("Klient o'chirildi.")
     else:
         await callback.answer("❌ Xatolik: " + (error or "Noma'lum xato"), show_alert=True)

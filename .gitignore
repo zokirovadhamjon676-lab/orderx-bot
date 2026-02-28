@@ -1,31 +1,6 @@
-# Virtual environment
-venv/
-env/
-ENV/
-
-# Python
-__pycache__/
-*.py[cod]
-*.so
-.Python
-
-# Database
-*.db
-*.sqlite3
-
-# Excel exports
-*.xlsx
-
-# Environment variables
 .env
-
-# Logs
-*.log
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+*.db
+__pycache__/
+*.xlsx
+venv/
+bot.log

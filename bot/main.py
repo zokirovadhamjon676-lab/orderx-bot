@@ -1,7 +1,15 @@
+import logging
+import random
+import re
+import time
+from logging.handlers import RotatingFileHandler
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from bot.config import BOT_TOKEN, ADMIN_ID
+
+from bot.config import BOT_TOKEN, ADMIN_ID, ADMIN_USERNAME
+from bot.middlewares.throttling import ThrottlingMiddleware
 from bot.handlers.clients import (
     add_client_cmd, list_clients_handler,
     show_clients_for_delete, delete_client_callback
@@ -16,15 +24,26 @@ from database.db import (
     add_user, get_user, update_user_phone_name, get_all_users,
     ban_user, unban_user, is_user_banned, delete_user
 )
-import random
-import logging
-import re
 
-logging.basicConfig(level=logging.INFO)
+# -------------------- Logging sozlash --------------------
+file_handler = RotatingFileHandler('bot.log', maxBytes=10*1024*1024, backupCount=5)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+file_handler.setLevel(logging.INFO)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, console_handler]
+)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
+
+# Rate limiting middleware (2 sekundda 3 ta so'rov)
+dp.middleware.setup(ThrottlingMiddleware(rate_limit=3, time_limit=2))
 
 # Sessiyalar
 reset_sessions = {}
@@ -32,6 +51,7 @@ change_phone_sessions = {}
 change_password_sessions = {}
 registration_sessions = {}
 authenticated_users = set()
+failed_attempts = {}  # noto'g'ri parol urinishlari
 
 def send_sms_code(phone, code):
     logger.info(f"📱 SMS kod {phone} raqamiga yuborildi: {code}")
@@ -48,7 +68,8 @@ def main_menu(user_id=None):
         KeyboardButton("🛍 Buyurtma qo'shish"),
         KeyboardButton("📊 Excel export"),
         KeyboardButton("🗑 O'chirish"),
-        KeyboardButton("⚙️ Sozlamalar")
+        KeyboardButton("⚙️ Sozlamalar"),
+        KeyboardButton("👤 Admin")
     ]
     if user_id and is_admin(user_id):
         buttons.append(KeyboardButton("👥 Foydalanuvchilar"))
@@ -154,7 +175,7 @@ async def continue_reset(callback: types.CallbackQuery):
     elif step == 'waiting_code':
         await callback.message.answer("🔢 Kodni kiriting:")
     elif step == 'waiting_new_password':
-        await callback.message.answer("🔐 Yangi parolni kiriting (kamida 4 belgi):")
+        await callback.message.answer("🔐 Yangi parolni kiriting (kamida 8 belgi, raqam va harf bo‘lsin):")
     else:
         del reset_sessions[user_id]
         await callback.message.answer("Bekor qilindi. /start ni bosing.")
@@ -180,6 +201,8 @@ async def handle_password_input(message: types.Message):
     logger.info(f"Parol tekshirilmoqda: user {user_id}")
     password_hash = get_setting("password_hash")
     if password_hash and db_check_password(message.text, password_hash):
+        # Urinishlarni tozalash
+        failed_attempts.pop(user_id, None)
         add_user(
             user_id=user_id,
             username=message.from_user.username,
@@ -194,7 +217,11 @@ async def handle_password_input(message: types.Message):
             registration_sessions[user_id] = {'step': 'waiting_phone'}
             await message.answer("📱 Iltimos, telefon raqamingizni kiriting (masalan: +998901234567):")
     else:
-        logger.info(f"User {user_id} noto‘g‘ri parol kiritdi")
+        failed_attempts[user_id] = failed_attempts.get(user_id, 0) + 1
+        logger.info(f"User {user_id} noto‘g‘ri parol kiritdi. Urinishlar: {failed_attempts[user_id]}")
+        if failed_attempts[user_id] >= 5:
+            await bot.send_message(ADMIN_ID, f"⚠️ Foydalanuvchi {user_id} 5 marta noto'g'ri parol kiritdi!")
+            failed_attempts[user_id] = 0
         await message.answer("❌ Parol noto‘g‘ri. Qayta urinib ko‘ring yoki 'Parolni unutdingizmi?' tugmasini bosing.")
 
 # -------------------- RO'YXATDAN O'TISH JARAYONI --------------------
@@ -240,12 +267,12 @@ async def handle_reset(message: types.Message):
             return
         session['phone'] = phone
         session['step'] = 'setup_password'
-        await message.answer("Endi bot uchun parol o'rnating (kamida 4 belgi):")
+        await message.answer("Endi bot uchun parol o'rnating (kamida 8 belgi, raqam va harf bo‘lsin):")
 
     elif step == 'setup_password':
         password = message.text.strip()
-        if len(password) < 4:
-            await message.answer("❌ Parol juda qisqa. Kamida 4 belgidan iborat bo‘lsin.")
+        if len(password) < 8 or not any(c.isdigit() for c in password) or not any(c.isalpha() for c in password):
+            await message.answer("❌ Parol kamida 8 belgidan iborat va raqam hamda harflarni o'z ichiga olishi kerak.")
             return
         hashed = hash_password(password)
         set_setting("password_hash", hashed)
@@ -279,18 +306,40 @@ async def handle_reset(message: types.Message):
             await message.answer("❌ Kod noto‘g‘ri. Qayta urinib ko‘ring.")
             return
         session['step'] = 'waiting_new_password'
-        await message.answer("✅ Kod tasdiqlandi. Endi yangi parolni kiriting:")
+        await message.answer("✅ Kod tasdiqlandi. Endi yangi parolni kiriting (kamida 8 belgi, raqam va harf bo‘lsin):")
 
     elif step == 'waiting_new_password':
         new_pass = message.text.strip()
-        if len(new_pass) < 4:
-            await message.answer("❌ Parol juda qisqa. Kamida 4 belgidan iborat bo‘lsin.")
+        if len(new_pass) < 8 or not any(c.isdigit() for c in new_pass) or not any(c.isalpha() for c in new_pass):
+            await message.answer("❌ Parol kamida 8 belgidan iborat va raqam hamda harflarni o'z ichiga olishi kerak.")
             return
         hashed = hash_password(new_pass)
         set_setting("password_hash", hashed)
         authenticated_users.add(user_id)
         del reset_sessions[user_id]
         await message.answer("✅ Parol muvaffaqiyatli o‘zgartirildi. Endi tizimga kirdingiz.", reply_markup=main_menu(user_id))
+
+# -------------------- ADMIN TUGMASI (hamma ko‘radi) --------------------
+@dp.message_handler(lambda msg: msg.text == "👤 Admin")
+@authenticated_only
+async def handle_admin_button(message: types.Message):
+    if ADMIN_USERNAME:
+        text = (
+            "📢 **Admin bilan bog‘lanish**\n\n"
+            f"👤 **Username:** @{ADMIN_USERNAME}\n"
+            "💬 **Murojaat uchun:** Yuqoridagi username orqali yozishingiz mumkin.\n\n"
+            "📌 *Eslatma: Admin faqat muhim masalalar bo‘yicha javob beradi.*"
+        )
+        keyboard = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("📩 Admin ga yozish", url=f"https://t.me/{ADMIN_USERNAME}")
+        )
+        await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
+    else:
+        await message.answer(
+            "❌ **Admin maʼlumoti mavjud emas.**\n"
+            "Iltimos, keyinroq urinib koʻring yoki administrator bilan bogʻlaning.",
+            parse_mode="Markdown"
+        )
 
 # -------------------- SOZLAMALAR MENYUSI --------------------
 @dp.message_handler(lambda msg: msg.text == "⚙️ Sozlamalar")
@@ -362,21 +411,21 @@ async def handle_change_password(message: types.Message):
         old_pass = message.text.strip()
         if db_check_password(old_pass, password_hash):
             session['step'] = 'waiting_new_password'
-            await message.answer("✅ Eski parol to‘g‘ri. Endi yangi parolni kiriting (kamida 4 belgi):")
+            await message.answer("✅ Eski parol to‘g‘ri. Endi yangi parolni kiriting (kamida 8 belgi, raqam va harf bo‘lsin):")
         else:
             await message.answer("❌ Eski parol noto‘g‘ri. Qayta urinib ko‘ring.")
 
     elif step == 'waiting_new_password':
         new_pass = message.text.strip()
-        if len(new_pass) < 4:
-            await message.answer("❌ Parol juda qisqa. Kamida 4 belgidan iborat bo‘lsin.")
+        if len(new_pass) < 8 or not any(c.isdigit() for c in new_pass) or not any(c.isalpha() for c in new_pass):
+            await message.answer("❌ Parol kamida 8 belgidan iborat va raqam hamda harflarni o'z ichiga olishi kerak.")
             return
         new_hashed = hash_password(new_pass)
         set_setting("password_hash", new_hashed)
         del change_password_sessions[user_id]
         await message.answer("✅ Parol muvaffaqiyatli o‘zgartirildi!", reply_markup=main_menu(user_id))
 
-# -------------------- FOYDALANUVCHILAR TUGMASI (REPLY) --------------------
+# -------------------- FOYDALANUVCHILAR TUGMASI (faqat admin) --------------------
 @dp.message_handler(lambda msg: msg.text == "👥 Foydalanuvchilar")
 @authenticated_only
 async def handle_users_button(message: types.Message):
@@ -426,7 +475,6 @@ async def users_command(message: types.Message):
         return
     await list_users(message)
 
-# -------------------- Tuzatilgan callback handlerlar --------------------
 @dp.callback_query_handler(lambda c: c.data.startswith('ban_') and c.data.split('_')[1].isdigit())
 async def ban_user_callback(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -501,17 +549,6 @@ async def unban_user_cmd(message: types.Message):
     except ValueError:
         await message.answer("❌ user_id son bo‘lishi kerak.")
 
-# -------------------- O'CHIRISH TUGMASI (REPLY) --------------------
-@dp.message_handler(lambda msg: msg.text == "🗑 O'chirish")
-@authenticated_only
-async def handle_delete_button(message: types.Message):
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        InlineKeyboardButton("👤 Klient o'chirish", callback_data="delete_choose_client"),
-        InlineKeyboardButton("📦 Buyurtma o'chirish", callback_data="delete_choose_order")
-    )
-    await message.answer("Nimani o'chirmoqchisiz?", reply_markup=keyboard)
-
 # -------------------- O'CHIRISH CALLBACKLARI (client/order) --------------------
 @dp.callback_query_handler(lambda c: c.data == "delete_choose_client")
 async def process_delete_client_choice(callback: types.CallbackQuery):
@@ -564,7 +601,17 @@ async def handle_add_order_button(message: types.Message):
 async def handle_export_button(message: types.Message):
     await export_orders_excel(message)
 
-# -------------------- UNIVERSAL HANDLER --------------------
+@dp.message_handler(lambda msg: msg.text == "🗑 O'chirish")
+@authenticated_only
+async def handle_delete_button(message: types.Message):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("👤 Klient o'chirish", callback_data="delete_choose_client"),
+        InlineKeyboardButton("📦 Buyurtma o'chirish", callback_data="delete_choose_order")
+    )
+    await message.answer("Nimani o'chirmoqchisiz?", reply_markup=keyboard)
+
+# -------------------- UNIVERSAL HANDLER (vergul bilan yozilgan matnlar) --------------------
 @dp.message_handler(lambda message: "," in message.text)
 @authenticated_only
 async def universal_input(message: types.Message):
